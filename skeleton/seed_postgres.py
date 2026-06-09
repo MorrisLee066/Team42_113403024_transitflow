@@ -15,6 +15,9 @@ import sys
 
 import psycopg2
 from psycopg2.extras import execute_values
+from argon2 import PasswordHasher
+
+ph = PasswordHasher()
 
 # ── resolve paths ────────────────────────────────────────────────────────────
 SCRIPT_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -54,15 +57,14 @@ def seed_metro_stations(cur):
             item.get("station_id"),
             item.get("name"),
             item.get("is_interchange_metro", False),
-            item.get("is_interchange_national_rail", False),
-            None  # Will be populated after NR stations are seeded
+            item.get("is_interchange_national_rail", False)
         ))
 
     sql = """
         INSERT INTO metro_stations (
-            station_id, name, is_interchange_metro, is_interchange_national_rail, interchange_nr_id
+            station_code, name, is_interchange_metro, is_interchange_national_rail
         ) VALUES %s
-        ON CONFLICT (station_id) DO NOTHING
+        ON CONFLICT (station_code) DO NOTHING
     """
     execute_values(cur, sql, rows)
     print(f"Seeded metro stations: {len(rows)} rows processed.")
@@ -82,8 +84,7 @@ def seed_national_rail_stations(cur):
             nr_id,
             item.get("name"),
             item.get("is_interchange_national_rail", False),
-            item.get("is_interchange_metro", False),
-            metro_id
+            item.get("is_interchange_metro", False)
         ))
         
         if metro_id:
@@ -91,15 +92,32 @@ def seed_national_rail_stations(cur):
 
     sql = """
         INSERT INTO national_rail_stations (
-            station_id, name, is_interchange_national_rail, is_interchange_metro, interchange_metro_id
+            station_code, name, is_interchange_national_rail, is_interchange_metro
         ) VALUES %s
-        ON CONFLICT (station_id) DO NOTHING
+        ON CONFLICT (station_code) DO NOTHING
     """
     execute_values(cur, sql, rows)
 
     if metro_updates:
-        update_sql = "UPDATE metro_stations SET interchange_nr_id = %s WHERE station_id = %s"
-        execute_values(cur, update_sql, metro_updates)
+        # Update national_rail_stations with interchange_metro_id
+        update_nr_sql = """
+            UPDATE national_rail_stations nr
+            SET interchange_metro_id = ms.id
+            FROM (VALUES %s) AS data(nr_code, metro_code)
+            JOIN metro_stations ms ON ms.station_code = data.metro_code
+            WHERE nr.station_code = data.nr_code
+        """
+        execute_values(cur, update_nr_sql, metro_updates)
+        
+        # Update metro_stations with interchange_nr_id
+        update_ms_sql = """
+            UPDATE metro_stations ms
+            SET interchange_nr_id = nr.id
+            FROM (VALUES %s) AS data(nr_code, metro_code)
+            JOIN national_rail_stations nr ON nr.station_code = data.nr_code
+            WHERE ms.station_code = data.metro_code
+        """
+        execute_values(cur, update_ms_sql, metro_updates)
         
     print(f"Seeded national rail stations: {len(rows)} rows processed.")
 
@@ -136,19 +154,33 @@ def seed_metro_schedules(cur):
                 item.get("travel_time_from_origin_min", {}).get(st_id, 0)
             ))
 
-    execute_values(cur, "INSERT INTO metro_lines (line_id) VALUES %s ON CONFLICT DO NOTHING", list(lines))
+    execute_values(cur, "INSERT INTO metro_lines (line_code) VALUES %s ON CONFLICT DO NOTHING", list(lines))
     
     execute_values(cur, """
-        INSERT INTO metro_schedules (schedule_id, line_id, direction, base_fare_usd, per_stop_rate_usd, frequency_min, operates_on) 
-        VALUES %s ON CONFLICT DO NOTHING
+        INSERT INTO metro_schedules (schedule_code, line_id, direction, base_fare_usd, per_stop_rate_usd, frequency_min, operates_on) 
+        SELECT data.sch_code, ml.id, data.dir::direction_enum, data.base::numeric, data.per::numeric, data.freq::int, data.ops::text[]
+        FROM (VALUES %s) AS data(sch_code, ln_code, dir, base, per, freq, ops)
+        JOIN metro_lines ml ON ml.line_code = data.ln_code
+        ON CONFLICT (schedule_code) DO NOTHING
     """, schedules)
     
     execute_values(cur, """
         INSERT INTO metro_schedule_stops (schedule_id, station_id, stop_order, travel_time_from_origin_min) 
-        VALUES %s ON CONFLICT DO NOTHING
+        SELECT ms.id, mst.id, data.s_order::int, data.t_time::int
+        FROM (VALUES %s) AS data(sch_code, st_code, s_order, t_time)
+        JOIN metro_schedules ms ON ms.schedule_code = data.sch_code
+        JOIN metro_stations mst ON mst.station_code = data.st_code
+        ON CONFLICT (schedule_id, stop_order) DO NOTHING
     """, stops)
     
-    execute_values(cur, "INSERT INTO metro_station_lines (station_id, line_id) VALUES %s ON CONFLICT DO NOTHING", list(st_lines))
+    execute_values(cur, """
+        INSERT INTO metro_station_lines (station_id, line_id)
+        SELECT mst.id, ml.id
+        FROM (VALUES %s) AS data(st_code, ln_code)
+        JOIN metro_stations mst ON mst.station_code = data.st_code
+        JOIN metro_lines ml ON ml.line_code = data.ln_code
+        ON CONFLICT (station_id, line_id) DO NOTHING
+    """, list(st_lines))
     print(f"Seeded metro schedules: {len(schedules)} routes, {len(stops)} stops.")
 
 def seed_national_rail_schedules(cur):
@@ -179,24 +211,41 @@ def seed_national_rail_schedules(cur):
             st_lines.add((st_id, line_id))
             stops.append((sch_id, st_id, i + 1, item.get("travel_time_from_origin_min", {}).get(st_id, 0)))
 
-    execute_values(cur, "INSERT INTO national_rail_lines (line_id) VALUES %s ON CONFLICT DO NOTHING", list(lines))
+    execute_values(cur, "INSERT INTO national_rail_lines (line_code) VALUES %s ON CONFLICT DO NOTHING", list(lines))
     
     execute_values(cur, """
-        INSERT INTO national_rail_schedules (schedule_id, line_id, service_type, direction, frequency_min, operates_on) 
-        VALUES %s ON CONFLICT DO NOTHING
+        INSERT INTO national_rail_schedules (schedule_code, line_id, service_type, direction, frequency_min, operates_on) 
+        SELECT data.sch_code, nl.id, data.srv::service_type_enum, data.dir::direction_enum, data.freq::int, data.ops::text[]
+        FROM (VALUES %s) AS data(sch_code, ln_code, srv, dir, freq, ops)
+        JOIN national_rail_lines nl ON nl.line_code = data.ln_code
+        ON CONFLICT (schedule_code) DO NOTHING
     """, schedules)
     
     execute_values(cur, """
         INSERT INTO national_rail_fares (schedule_id, fare_class, base_fare_usd, per_stop_rate_usd) 
-        VALUES %s ON CONFLICT DO NOTHING
+        SELECT ns.id, data.fc::fare_class_enum, data.base::numeric, data.per::numeric
+        FROM (VALUES %s) AS data(sch_code, fc, base, per)
+        JOIN national_rail_schedules ns ON ns.schedule_code = data.sch_code
+        ON CONFLICT (schedule_id, fare_class) DO NOTHING
     """, fares)
     
     execute_values(cur, """
         INSERT INTO national_rail_schedule_stops (schedule_id, station_id, stop_order, travel_time_from_origin_min) 
-        VALUES %s ON CONFLICT DO NOTHING
+        SELECT ns.id, nst.id, data.s_order::int, data.t_time::int
+        FROM (VALUES %s) AS data(sch_code, st_code, s_order, t_time)
+        JOIN national_rail_schedules ns ON ns.schedule_code = data.sch_code
+        JOIN national_rail_stations nst ON nst.station_code = data.st_code
+        ON CONFLICT (schedule_id, stop_order) DO NOTHING
     """, stops)
     
-    execute_values(cur, "INSERT INTO national_rail_station_lines (station_id, line_id) VALUES %s ON CONFLICT DO NOTHING", list(st_lines))
+    execute_values(cur, """
+        INSERT INTO national_rail_station_lines (station_id, line_id) 
+        SELECT nst.id, nl.id
+        FROM (VALUES %s) AS data(st_code, ln_code)
+        JOIN national_rail_stations nst ON nst.station_code = data.st_code
+        JOIN national_rail_lines nl ON nl.line_code = data.ln_code
+        ON CONFLICT (station_id, line_id) DO NOTHING
+    """, list(st_lines))
     print(f"Seeded NR schedules: {len(schedules)} routes, {len(stops)} stops.")
 
 def seed_seat_layouts(cur):
@@ -222,13 +271,16 @@ def seed_seat_layouts(cur):
 
     sql = """
         INSERT INTO national_rail_seats (schedule_id, seat_code, coach, fare_class, seat_row, seat_column) 
-        VALUES %s ON CONFLICT (schedule_id, seat_code) DO NOTHING
+        SELECT s.id, data.seat_code, data.coach, data.fare_class::fare_class_enum, data.row::int, data.col
+        FROM (VALUES %s) AS data(sch_code, seat_code, coach, fare_class, row, col)
+        JOIN national_rail_schedules s ON s.schedule_code = data.sch_code
+        ON CONFLICT (schedule_id, seat_code) DO NOTHING
     """
     execute_values(cur, sql, rows)
     print(f"Seeded NR seats: {len(rows)} seats flattened.")
 
 def seed_users(cur):
-    """Seed users and dummy credentials."""
+    """Seed users, dynamically hash passwords and secret answers using Argon2id."""
     data = load("registered_users.json")
     if not data: return
 
@@ -237,10 +289,10 @@ def seed_users(cur):
     for user in data:
         full_name = user.get("full_name", "")
         parts = full_name.split(" ", 1)
+        user_code = user.get("user_id")
         
-        user_id = user.get("user_id")
         rows.append((
-            user_id,
+            user_code,
             full_name,
             parts[0],
             parts[1] if len(parts) > 1 else "",
@@ -248,21 +300,36 @@ def seed_users(cur):
             user.get("phone"),
             user.get("date_of_birth")
         ))
-        creds.append((user_id, "$2b$12$dummyHashValueForMockData1234567890"))
+        
+        raw_password = user.get("password")
+        raw_answer = user.get("secret_answer")
+        
+        hashed_password = ph.hash(raw_password) if raw_password else ""
+        hashed_answer = ph.hash(raw_answer) if raw_answer else None
+
+        creds.append((
+            user_code,
+            hashed_password,
+            user.get("secret_question"),
+            hashed_answer
+        ))
 
     execute_values(cur, """
-        INSERT INTO users (user_id, full_name, first_name, surname, email, phone, date_of_birth) 
-        VALUES %s ON CONFLICT DO NOTHING
+        INSERT INTO users (user_code, full_name, first_name, surname, email, phone, date_of_birth) 
+        VALUES %s ON CONFLICT (user_code) DO NOTHING
     """, rows)
     
     execute_values(cur, """
-        INSERT INTO user_credentials (user_id, password_hash) 
-        VALUES %s ON CONFLICT DO NOTHING
+        INSERT INTO user_credentials (user_id, password_hash, secret_question, secret_answer_hash) 
+        SELECT u.id, data.hash, data.question, data.ans_hash
+        FROM (VALUES %s) AS data(u_code, hash, question, ans_hash)
+        JOIN users u ON u.user_code = data.u_code
+        ON CONFLICT (user_id) DO NOTHING
     """, creds)
-    print(f"Seeded users: {len(rows)} rows processed.")
+    print(f"Seeded users and hashed credentials: {len(rows)} rows processed.")
 
 def seed_national_rail_bookings(cur):
-    """Seed NR bookings directly without UUID lookups."""
+    """Seed NR bookings."""
     data = load("bookings.json")
     if not data: return
 
@@ -282,28 +349,32 @@ def seed_national_rail_bookings(cur):
 
     sql = """
         INSERT INTO national_rail_bookings (
-            booking_id, user_id, schedule_id, origin_station_id, destination_station_id,
+            booking_ref, user_id, schedule_id, origin_station_id, destination_station_id,
             seat_code, travel_date, departure_time, ticket_type, fare_class, coach,
             stops_travelled, amount_usd, refund_amount_usd, status,
             booked_at, travelled_at, cancelled_at,
             origin_stop_order, destination_stop_order
         )
         SELECT
-            data.b_id, data.u_id, data.s_id, data.origin, data.dest,
+            data.b_ref, u.id, s.id, o.id, d.id,
             data.seat_c, data.t_date::date, data.d_time::time, data.t_type::ticket_type_enum, data.f_class::fare_class_enum, data.coach,
             data.stops_t::int, data.amt::numeric, data.ref_amt::numeric, data.status::booking_status_enum,
             data.b_at::timestamptz, data.t_at::timestamptz, data.c_at::timestamptz,
             o_stop.stop_order, d_stop.stop_order
         FROM (VALUES %s) AS data(
-            b_id, u_id, s_id, origin, dest, seat_c,
+            b_ref, u_code, s_code, o_code, d_code, seat_c,
             t_date, d_time, t_type, f_class, coach, stops_t,
             amt, ref_amt, status, b_at, t_at, c_at
         )
+        JOIN users u ON u.user_code = data.u_code
+        JOIN national_rail_schedules s ON s.schedule_code = data.s_code
+        JOIN national_rail_stations o ON o.station_code = data.o_code
+        JOIN national_rail_stations d ON d.station_code = data.d_code
         JOIN national_rail_schedule_stops o_stop 
-            ON o_stop.schedule_id = data.s_id AND o_stop.station_id = data.origin
+            ON o_stop.schedule_id = s.id AND o_stop.station_id = o.id
         JOIN national_rail_schedule_stops d_stop 
-            ON d_stop.schedule_id = data.s_id AND d_stop.station_id = data.dest
-        ON CONFLICT (booking_id) DO NOTHING
+            ON d_stop.schedule_id = s.id AND d_stop.station_id = d.id
+        ON CONFLICT (booking_ref) DO NOTHING
     """
     execute_values(cur, sql, rows)
     print(f"Seeded NR bookings: {len(rows)} rows processed.")
@@ -325,9 +396,21 @@ def seed_metro_travels(cur):
 
     sql = """
         INSERT INTO metro_trips (
-            trip_id, user_id, schedule_id, origin_station_id, destination_station_id,
+            trip_ref, user_id, schedule_id, origin_station_id, destination_station_id,
             travel_date, ticket_type, stops_travelled, amount_usd, status, purchased_at, travelled_at
-        ) VALUES %s ON CONFLICT (trip_id) DO NOTHING
+        )
+        SELECT
+            data.t_ref, u.id, s.id, o.id, d.id,
+            data.t_date::date, data.t_type::ticket_type_enum, data.stops_t::int, data.amt::numeric, 
+            data.status::booking_status_enum, data.p_at::timestamptz, data.t_at::timestamptz
+        FROM (VALUES %s) AS data(
+            t_ref, u_code, s_code, o_code, d_code, t_date, t_type, stops_t, amt, status, p_at, t_at
+        )
+        JOIN users u ON u.user_code = data.u_code
+        LEFT JOIN metro_schedules s ON s.schedule_code = data.s_code
+        LEFT JOIN metro_stations o ON o.station_code = data.o_code
+        LEFT JOIN metro_stations d ON d.station_code = data.d_code
+        ON CONFLICT (trip_ref) DO NOTHING
     """
     execute_values(cur, sql, rows)
     print(f"Seeded metro travels: {len(rows)} rows processed.")
@@ -352,8 +435,14 @@ def seed_payments(cur):
 
     sql = """
         INSERT INTO payments (
-            payment_id, rail_booking_id, metro_trip_id, amount_usd, method, status, paid_at
-        ) VALUES %s ON CONFLICT (payment_id) DO NOTHING
+            payment_ref, rail_booking_id, metro_trip_id, amount_usd, method, status, paid_at
+        )
+        SELECT 
+            data.p_ref, rb.id, mt.id, data.amt::numeric, data.method::payment_method_enum, data.status::payment_status_enum, data.p_at::timestamptz
+        FROM (VALUES %s) AS data(p_ref, rb_ref, mt_ref, amt, method, status, p_at)
+        LEFT JOIN national_rail_bookings rb ON rb.booking_ref = data.rb_ref
+        LEFT JOIN metro_trips mt ON mt.trip_ref = data.mt_ref
+        ON CONFLICT (payment_ref) DO NOTHING
     """
     execute_values(cur, sql, rows)
     print(f"Seeded payments: {len(rows)} rows processed.")
@@ -378,8 +467,15 @@ def seed_feedback(cur):
 
     sql = """
         INSERT INTO feedback (
-            feedback_id, user_id, rail_booking_id, metro_trip_id, rating, comment, submitted_at
-        ) VALUES %s ON CONFLICT (feedback_id) DO NOTHING
+            feedback_ref, user_id, rail_booking_id, metro_trip_id, rating, comment, submitted_at
+        )
+        SELECT
+            data.f_ref, u.id, rb.id, mt.id, data.rating::int, data.comment, data.s_at::timestamptz
+        FROM (VALUES %s) AS data(f_ref, u_code, rb_ref, mt_ref, rating, comment, s_at)
+        JOIN users u ON u.user_code = data.u_code
+        LEFT JOIN national_rail_bookings rb ON rb.booking_ref = data.rb_ref
+        LEFT JOIN metro_trips mt ON mt.trip_ref = data.mt_ref
+        ON CONFLICT (feedback_ref) DO NOTHING
     """
     execute_values(cur, sql, rows)
     print(f"Seeded feedback: {len(rows)} rows processed.")
