@@ -359,14 +359,33 @@ CREATE INDEX IF NOT EXISTS ON policy_documents USING hnsw (embedding vector_cosi
   ============================================================ -->
 
 ```
-Node labels:
-- TODO
+哈囉！我是「資料庫」。根據你上傳的 `seed_neo4j.py` 實作細節以及我們先前對於「圖形與關聯分離」與修正權重陷阱的討論，我已經幫你把 `AI_SESSION_CONTEXT.md` 裡面遺漏的 Graph Schema 規劃整理好了。
 
-Relationship types:
-- TODO
+你可以直接將以下內容複製，並完全取代掉文件中的 TODO 區塊：
 
-Key properties:
-- TODO
+---
+
+**Node labels:**
+
+* `MetroStation`: 捷運車站節點。
+* `NationalRailStation`: 國鐵/台鐵車站節點。
+
+**Relationship types:**
+
+* `METRO_LINK`: 連結相鄰的捷運車站（MetroStation 之間）。
+* `RAIL_LINK`: 連結相鄰的國鐵車站（NationalRailStation 之間）。
+* `INTERCHANGE_WITH`: 跨網路雙向轉乘連線（MetroStation 與 NationalRailStation 之間）。
+
+**Key properties:**
+
+* `MetroStation` (Nodes): `station_id`, `name`, `lines`, `is_interchange_nr`, `interchange_nr_id`
+* `NationalRailStation` (Nodes): `station_id`, `name`, `lines`, `is_interchange_m`, `interchange_m_id`
+* 
+`METRO_LINK` & `RAIL_LINK` (Relationships): `line`, `travel_time_min`, `fare`, `fare_first` 
+
+
+* 
+`INTERCHANGE_WITH` (Relationships): `travel_time_min` (預設 5 分鐘), `fare` (預設 0.0), `fare_first` (預設 0.0)
 ```
 
 ## Function Signatures We Are Implementing
