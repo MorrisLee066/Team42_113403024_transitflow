@@ -1,6 +1,6 @@
 {
-  "version": "1.0",
-  "last_updated": "2024-01-01",
+  "version": "1.1",
+  "last_updated": "2024-06-11",
   "metro": {
     "bicycles": {
       "foldable_bicycles": {
@@ -56,7 +56,32 @@
       "Items emitting strong odours that may cause discomfort to other passengers"
     ],
     "smoking_and_vaping": "Strictly prohibited on all metro carriages, platforms, and station concourses.",
-    "noise": "Passengers are asked to keep noise to a considerate level. Use of personal audio devices with external speakers is not permitted."
+    "noise": "Passengers are asked to keep noise to a considerate level. Use of personal audio devices with external speakers is not permitted.",
+    "accessibility": {
+      "wheelchair_access": "All metro stations have step-free access from street to platform via lifts. Ramps for boarding are built into the platform edge.",
+      "visual_and_audio_aids": "Tactile paving is installed along all platform edges. Audio announcements and visual displays are available on all trains.",
+      "priority_boarding": "Passengers with mobility issues are encouraged to use the designated wide fare gates and board at the middle carriages."
+    },
+    "lost_property": {
+      "reporting": "Passengers who lose items on trains or at stations should report them to the station help desk or via the in-app 'Lost Property' form.",
+      "storage_duration_days": 30,
+      "collection": "Items are held at the Central Station Lost Property Office. A valid photo ID is required for collection.",
+      "perishable_items": "Food, drink, and other perishable items are disposed of at the end of the day for hygiene reasons.",
+      "fee_usd": 5.00,
+      "hazardous_and_illegal_items": "Any unattended items deemed suspicious, hazardous, or illegal will be immediately handed over to the local police."
+    },
+    "engineering_works_and_disruption": {
+      "notification": "Planned engineering works are announced at least 14 days in advance via the app and station notice boards.",
+      "alternative_transport": "Rail replacement bus services are provided at no extra cost when national rail or metro lines are suspended due to planned works.",
+      "ticket_acceptance": "During unplanned major disruptions, tickets may be accepted on alternative public transport routes. Passengers should listen to station announcements for details."
+    },
+    "penalty_fares": {
+      "fare_evasion": "Travelling without a valid ticket, travelling in first class with a standard ticket, or failing to present proof of age for a child fare constitutes fare evasion.",
+      "penalty_amount_usd": 50.00,
+      "early_payment_discount": "If the penalty is paid within 14 days of issue, the amount is reduced to $25.00.",
+      "payment_deadline_days": 21,
+      "appeal_process": "Appeals must be submitted in writing within 14 days of the penalty being issued via the customer service portal."
+    }
   },
   "national_rail": {
     "bicycles": {
@@ -132,6 +157,26 @@
       "Items emitting strong odours that may cause discomfort to other passengers"
     ],
     "smoking_and_vaping": "Strictly prohibited on all train carriages and at all station platforms.",
-    "conduct": "Passengers behaving in a manner that causes distress or danger to other passengers or staff may be removed from the train. In serious cases, the operator reserves the right to involve law enforcement."
+    "conduct": "Passengers behaving in a manner that causes distress or danger to other passengers or staff may be removed from the train. In serious cases, the operator reserves the right to involve law enforcement.",
+    "lost_property": {
+      "reporting": "Passengers who lose items on trains or at stations should report them to the station help desk or via the in-app 'Lost Property' form.",
+      "storage_duration_days": 30,
+      "collection": "Items are held at the Central Station Lost Property Office. A valid photo ID is required for collection.",
+      "perishable_items": "Food, drink, and other perishable items are disposed of at the end of the day for hygiene reasons.",
+      "fee_usd": 5.00,
+      "hazardous_and_illegal_items": "Any unattended items deemed suspicious, hazardous, or illegal will be immediately handed over to the local police."
+    },
+    "engineering_works_and_disruption": {
+      "notification": "Planned engineering works are announced at least 14 days in advance via the app and station notice boards.",
+      "alternative_transport": "Rail replacement bus services are provided at no extra cost when national rail or metro lines are suspended due to planned works.",
+      "ticket_acceptance": "During unplanned major disruptions, tickets may be accepted on alternative public transport routes. Passengers should listen to station announcements for details."
+    },
+    "penalty_fares": {
+      "fare_evasion": "Travelling without a valid ticket, travelling in first class with a standard ticket, or failing to present proof of age for a child fare constitutes fare evasion.",
+      "penalty_amount_usd": 50.00,
+      "early_payment_discount": "If the penalty is paid within 14 days of issue, the amount is reduced to $25.00.",
+      "payment_deadline_days": 21,
+      "appeal_process": "Appeals must be submitted in writing within 14 days of the penalty being issued via the customer service portal."
+    }
   }
 }
