@@ -39,102 +39,114 @@ def seed():
     """
     Main function to populate the Neo4j graph database.
     It reads JSON mock data and uses Cypher queries to build nodes and relationships.
+    Includes try-except block to satisfy team contract error-handling requirements.
     """
-    # Load station data from JSON files
-    metro_stations = _load("metro_stations.json")
-    rail_stations  = _load("national_rail_stations.json")
+    try:
+        # Load station data from JSON files
+        metro_stations = _load("metro_stations.json")
+        rail_stations  = _load("national_rail_stations.json")
 
-    # Initialize the Neo4j driver using credentials from config.py
-    driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
-    
-    with driver.session() as session:
+        # Initialize the Neo4j driver using credentials from config.py
+        driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
+        
+        with driver.session() as session:
 
-        # ---------------------------------------------------------
-        # 0. Clear existing graph data
-        # ---------------------------------------------------------
-        # Useful during development to ensure a clean slate before seeding.
-        session.run("MATCH (n) DETACH DELETE n")
-        print("  Cleared existing graph data")
+            # ---------------------------------------------------------
+            # 0. Clear existing graph data
+            # ---------------------------------------------------------
+            # Useful during development to ensure a clean slate before seeding.
+            session.run("MATCH (n) DETACH DELETE n")
+            print("  Cleared existing graph data")
 
-        # ---------------------------------------------------------
-        # 1. Create Metro Station Nodes
-        # ---------------------------------------------------------
-        # UNWIND is used to process the entire JSON list in a single batch for better performance.
-        # MERGE enforces idempotency: it creates the node only if a matching station_id doesn't exist.
-        session.run("""
-            UNWIND $stations AS s
-            MERGE (m:MetroStation {station_id: s.station_id})
-            SET m.name = s.name,
-                m.lines = s.lines,
-                m.is_interchange_nr = s.is_interchange_national_rail,
-                m.interchange_nr_id = s.interchange_national_rail_station_id
-        """, stations=metro_stations)
-        print("  Created MetroStation nodes")
+            # ---------------------------------------------------------
+            # 1. Create Metro Station Nodes
+            # ---------------------------------------------------------
+            # UNWIND is used to process the entire JSON list in a single batch for better performance.
+            # MERGE enforces idempotency: it creates the node only if a matching station_id doesn't exist.
+            session.run("""
+                UNWIND $stations AS s
+                MERGE (m:MetroStation {station_id: s.station_id})
+                SET m.name = s.name,
+                    m.lines = s.lines,
+                    m.is_interchange_nr = s.is_interchange_national_rail,
+                    m.interchange_nr_id = s.interchange_national_rail_station_id
+            """, stations=metro_stations)
+            print("  Created MetroStation nodes")
 
-        # ---------------------------------------------------------
-        # 2. Create National Rail Station Nodes
-        # ---------------------------------------------------------
-        # Similar to metro stations, we use a distinct Node Label (:NationalRailStation)
-        # to strictly separate the two networks.
-        session.run("""
-            UNWIND $stations AS s
-            MERGE (n:NationalRailStation {station_id: s.station_id})
-            SET n.name = s.name,
-                n.lines = s.lines,
-                n.is_interchange_m = s.is_interchange_metro,
-                n.interchange_m_id = s.interchange_metro_station_id
-        """, stations=rail_stations)
-        print("  Created NationalRailStation nodes")
+            # ---------------------------------------------------------
+            # 2. Create National Rail Station Nodes
+            # ---------------------------------------------------------
+            # Similar to metro stations, we use a distinct Node Label (:NationalRailStation)
+            # to strictly separate the two networks.
+            session.run("""
+                UNWIND $stations AS s
+                MERGE (n:NationalRailStation {station_id: s.station_id})
+                SET n.name = s.name,
+                    n.lines = s.lines,
+                    n.is_interchange_m = s.is_interchange_metro,
+                    n.interchange_m_id = s.interchange_metro_station_id
+            """, stations=rail_stations)
+            print("  Created NationalRailStation nodes")
 
-        # ---------------------------------------------------------
-        # 3. Create Metro Network Relationships (:METRO_LINK)
-        # ---------------------------------------------------------
-        # Iterate through each station's 'adjacent_stations' array.
-        # MATCH locates the source and target nodes by their unique IDs.
-        # MERGE creates the relationship. SET assigns the travel time and line metadata to the edge.
-        session.run("""
-            UNWIND $stations AS s
-            UNWIND s.adjacent_stations AS adj
-            MATCH (a:MetroStation {station_id: s.station_id})
-            MATCH (b:MetroStation {station_id: adj.station_id})
-            MERGE (a)-[r:METRO_LINK {line: adj.line}]->(b)
-            SET r.travel_time_min = adj.travel_time_min
-        """, stations=metro_stations)
-        print("  Created METRO_LINK relationships")
+            # ---------------------------------------------------------
+            # 3. Create Metro Network Relationships (:METRO_LINK)
+            # ---------------------------------------------------------
+            # MERGE creates the relationship. SET assigns the travel time, line, and default fare metadata.
+            session.run("""
+                UNWIND $stations AS s
+                UNWIND s.adjacent_stations AS adj
+                MATCH (a:MetroStation {station_id: s.station_id})
+                MATCH (b:MetroStation {station_id: adj.station_id})
+                MERGE (a)-[r:METRO_LINK {line: adj.line}]->(b)
+                SET r.travel_time_min = adj.travel_time_min,
+                    r.fare = 2.0,
+                    r.fare_first = 2.0
+            """, stations=metro_stations)
+            print("  Created METRO_LINK relationships (with travel time and fares)")
 
-        # ---------------------------------------------------------
-        # 4. Create National Rail Network Relationships (:RAIL_LINK)
-        # ---------------------------------------------------------
-        session.run("""
-            UNWIND $stations AS s
-            UNWIND s.adjacent_stations AS adj
-            MATCH (a:NationalRailStation {station_id: s.station_id})
-            MATCH (b:NationalRailStation {station_id: adj.station_id})
-            MERGE (a)-[r:RAIL_LINK {line: adj.line}]->(b)
-            SET r.travel_time_min = adj.travel_time_min
-        """, stations=rail_stations)
-        print("  Created RAIL_LINK relationships")
+            # ---------------------------------------------------------
+            # 4. Create National Rail Network Relationships (:RAIL_LINK)
+            # ---------------------------------------------------------
+            session.run("""
+                UNWIND $stations AS s
+                UNWIND s.adjacent_stations AS adj
+                MATCH (a:NationalRailStation {station_id: s.station_id})
+                MATCH (b:NationalRailStation {station_id: adj.station_id})
+                MERGE (a)-[r:RAIL_LINK {line: adj.line}]->(b)
+                SET r.travel_time_min = adj.travel_time_min,
+                    r.fare = 5.0,
+                    r.fare_first = 10.0
+            """, stations=rail_stations)
+            print("  Created RAIL_LINK relationships (with travel time and fares)")
 
-        # ---------------------------------------------------------
-        # 5. Create Cross-Network Interchange Relationships (:INTERCHANGE_WITH)
-        # ---------------------------------------------------------
-        # Filter stations that act as a bridge between Metro and National Rail.
-        # We explicitly create bidirectional relationships (m->n and n->m) 
-        # so pathfinding algorithms can easily traverse between networks regardless of the starting point.
-        session.run("""
-            UNWIND $stations AS s
-            WITH s WHERE s.is_interchange_national_rail = true AND s.interchange_national_rail_station_id IS NOT NULL
-            MATCH (m:MetroStation {station_id: s.station_id})
-            MATCH (n:NationalRailStation {station_id: s.interchange_national_rail_station_id})
-            MERGE (m)-[:INTERCHANGE_WITH]->(n)
-            MERGE (n)-[:INTERCHANGE_WITH]->(m)
-        """, stations=metro_stations)
-        print("  Created INTERCHANGE_WITH relationships")
+            # ---------------------------------------------------------
+            # 5. Create Cross-Network Interchange Relationships (:INTERCHANGE_WITH)
+            # ---------------------------------------------------------
+            # Bidirectional relationships (m->n and n->m) for pathfinding.
+            # Includes default 5-minute travel time to fix the APOC Dijkstra weight trap, and 0 fare.
+            session.run("""
+                UNWIND $stations AS s
+                WITH s WHERE s.is_interchange_national_rail = true AND s.interchange_national_rail_station_id IS NOT NULL
+                MATCH (m:MetroStation {station_id: s.station_id})
+                MATCH (n:NationalRailStation {station_id: s.interchange_national_rail_station_id})
+                MERGE (m)-[r1:INTERCHANGE_WITH]->(n)
+                SET r1.travel_time_min = 5,
+                    r1.fare = 0.0,
+                    r1.fare_first = 0.0
+                MERGE (n)-[r2:INTERCHANGE_WITH]->(m)
+                SET r2.travel_time_min = 5,
+                    r2.fare = 0.0,
+                    r2.fare_first = 0.0
+            """, stations=metro_stations)
+            print("  Created INTERCHANGE_WITH relationships (with 5 min transfer time and 0 fare)")
 
-    # Always close the driver connection when done
-    driver.close()
-    print("\nNeo4j graph seeded successfully.")
-    print("   Open http://localhost:7475 to explore the graph.")
+        # Always close the driver connection when done
+        driver.close()
+        print("\nNeo4j graph seeded successfully.")
+        print("   Open http://localhost:7475 to explore the graph.")
+        
+    except Exception as e:
+        print(f"\n[Error] Failed to seed Neo4j database: {e}")
 
 
 if __name__ == "__main__":
