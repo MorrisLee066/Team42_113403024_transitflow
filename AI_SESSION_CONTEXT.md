@@ -414,13 +414,30 @@ USING hnsw (embedding vector_cosine_ops);
 
 ```
 Node labels:
-- TODO
+
+MetroStation: 捷運車站節點。
+
+NationalRailStation: 國鐵/台鐵車站節點。
 
 Relationship types:
-- TODO
+
+METRO_LINK: 連結相鄰的捷運車站（MetroStation 之間）。
+
+RAIL_LINK: 連結相鄰的國鐵車站（NationalRailStation 之間）。
+
+INTERCHANGE_WITH: 跨網路雙向轉乘連線（MetroStation 與 NationalRailStation 之間）。
 
 Key properties:
-- TODO
+
+MetroStation (Nodes): station_id, name, lines, is_interchange_nr, interchange_nr_id
+
+NationalRailStation (Nodes): station_id, name, lines, is_interchange_m, interchange_m_id
+
+
+METRO_LINK & RAIL_LINK (Relationships): line, travel_time_min, fare, fare_first 
+
+
+INTERCHANGE_WITH (Relationships): travel_time_min (預設 5 分鐘), fare (預設 0.0), fare_first (預設 0.0)
 ```
 
 ## Function Signatures We Are Implementing

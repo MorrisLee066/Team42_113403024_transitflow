@@ -36,7 +36,7 @@ PG_DB       = os.getenv("PG_DB",       "transitflow")
 PG_DSN = f"postgresql://{PG_USER}:{PG_PASSWORD}@{PG_HOST}:{PG_PORT}/{PG_DB}"
 
 # ── Neo4j ─────────────────────────────────────────────────────────────────────
-NEO4J_URI      = os.getenv("NEO4J_URI",      "bolt://localhost:7687")
+NEO4J_URI      = os.getenv("NEO4J_URI",      "bolt://localhost:7688")
 NEO4J_USER     = os.getenv("NEO4J_USER",     "neo4j")
 NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "transitflow")
 
