@@ -151,7 +151,7 @@ def query_available_seats(schedule_id: str, travel_date: str, fare_class: str) -
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 # Note: schedule_id passed by Agent is the schedule_code (Business Key, e.g., 'NR1-001')
                 cur.execute("""
-                    SELECT s.seat_code, s.coach, s.seat_row, s.seat_column
+                    SELECT s.seat_code AS seat_id, s.coach, s.seat_row AS row, s.seat_column AS column
                     FROM national_rail_seats s
                     JOIN national_rail_schedules sch ON s.schedule_id = sch.id
                     WHERE sch.schedule_code = %s AND s.fare_class = %s
@@ -212,7 +212,7 @@ def query_user_profile(user_email: str) -> Optional[dict]:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 # Parameterized Query to prevent SQL Injection
                 cur.execute("""
-                    SELECT user_code, full_name, first_name, surname, email, phone, date_of_birth, year_of_birth, registered_at
+                    SELECT user_code AS user_id, user_code, full_name, first_name, surname, email, phone, date_of_birth, year_of_birth, registered_at
                     FROM users
                     WHERE email = %s AND is_active = TRUE
                 """, (user_email,))
@@ -243,7 +243,7 @@ def query_user_bookings(user_email: str) -> dict:
 
                 # Step 2: Fetch National Rail Bookings with Station Names (JOIN)
                 cur.execute("""
-                    SELECT b.booking_ref, b.travel_date, b.departure_time, b.ticket_type, b.fare_class,
+                    SELECT b.booking_ref AS booking_id, b.travel_date, b.departure_time, b.ticket_type, b.fare_class,
                            b.coach, b.seat_code, b.amount_usd, b.status,
                            o.name AS origin_station, d.name AS destination_station
                     FROM national_rail_bookings b
@@ -256,7 +256,7 @@ def query_user_bookings(user_email: str) -> dict:
 
                 # Step 3: Fetch Metro Trips with Station Names (JOIN)
                 cur.execute("""
-                    SELECT m.trip_ref, m.travel_date, m.ticket_type, m.amount_usd, m.status,
+                    SELECT m.trip_ref AS trip_id, m.travel_date, m.ticket_type, m.amount_usd, m.status,
                            o.name AS origin_station, d.name AS destination_station
                     FROM metro_trips m
                     LEFT JOIN metro_stations o ON m.origin_station_id = o.id
@@ -285,7 +285,7 @@ def query_payment_info(booking_id: str) -> Optional[dict]:
                 # We assume booking_id from the LLM Agent refers to the Business Key (e.g., 'BKG-123')
                 # We check both rail bookings and metro trips.
                 cur.execute("""
-                    SELECT p.payment_ref, p.amount_usd, p.method, p.status, p.paid_at
+                    SELECT p.payment_ref AS payment_id, p.amount_usd, p.method, p.status, p.paid_at
                     FROM payments p
                     LEFT JOIN national_rail_bookings rb ON p.rail_booking_id = rb.id
                     LEFT JOIN metro_trips mt ON p.metro_trip_id = mt.id
@@ -437,7 +437,7 @@ def login_user(email: str, password: str) -> Optional[dict]:
         with _connect() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 cur.execute("""
-                    SELECT u.id, u.user_code, u.full_name, u.email, u.is_active, c.password_hash
+                    SELECT u.id, u.user_code, u.full_name, u.first_name, u.surname, u.email, u.is_active, c.password_hash
                     FROM users u
                     JOIN user_credentials c ON u.id = c.user_id
                     WHERE u.email = %s
