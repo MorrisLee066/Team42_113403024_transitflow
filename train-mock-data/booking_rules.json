@@ -110,6 +110,8 @@
     "fraud": "Use of another person's ticket, presentation of a counterfeit ticket, or deliberate fare evasion may result in a penalty fare, removal from the service, and/or legal action.",
     "lost_tickets": "Digital tickets can be retrieved via the app at any time using the booking reference. Passengers are advised to screenshot their QR code before travel in case of connectivity issues.",
     "customer_service": "Passengers with queries or complaints may contact customer service via the in-app chat, email, or station help desks. Response time is within 2 business days.",
-    "dispute_resolution": "If a passenger disagrees with a refund decision, they may escalate the case to the customer service team within 14 days of the original decision."
+    "dispute_resolution": "If a passenger disagrees with a refund decision, they may escalate the case to the customer service team within 14 days of the original decision.",
+    "accessibility_discounts": "Passengers holding a valid disability registration card are entitled to a 30% discount on all single and return tickets across both metro and national rail networks. This must be applied at the ticket counter or verified via the app.",
+    "lost_property_liability": "The operator is not responsible for lost, stolen, or damaged personal belongings. Please refer to the Lost Property policy for recovery procedures."
   }
 }

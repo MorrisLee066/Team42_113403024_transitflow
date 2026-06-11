@@ -73,5 +73,22 @@
       "refund_rule": "RF004",
       "notes": "A day pass offers better value than individual single tickets for passengers making 3 or more metro trips in a day. Tap in and out normally at each station."
     }
+  },
+  {
+    "ticket_type": "season_pass",
+    "display_name": "Metro Season Pass (Weekly/Monthly)",
+    "available_on": ["metro"],
+    "description": "Unlimited travel on all metro lines for a duration of 7 days (Weekly Pass) or 30 days (Monthly Pass). Ideal for regular commuters.",
+    "metro": {
+      "pricing_model": "flat_rate_duration",
+      "weekly_price_usd": 25.00,
+      "monthly_price_usd": 85.00,
+      "validity": "Valid from the date of purchase until 23:59 on the 7th or 30th consecutive day.",
+      "advance_purchase": false,
+      "changes_allowed": false,
+      "refundable": true,
+      "refund_rule": "Refundable only before the first day of validity. Once activated (first tap-in), season passes are strictly non-refundable.",
+      "notes": "Season passes are strictly non-transferable and are linked to the user's account. They do not cover national rail services."
+    }
   }
 ]
