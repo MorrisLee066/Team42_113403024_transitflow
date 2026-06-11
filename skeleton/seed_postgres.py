@@ -183,6 +183,9 @@ def seed_metro_schedules(cur):
     """, list(st_lines))
     print(f"Seeded metro schedules: {len(schedules)} routes, {len(stops)} stops.")
 
+# TASK 6 EXTENSION:
+# Seed national_rail_schedules with first_train_time and last_train_time so
+# frequency-based departure_time validation can use real service windows.
 def seed_national_rail_schedules(cur):
     """Seed NR lines, schedules, fares, and stops."""
     data = load("national_rail_schedules.json")
@@ -201,11 +204,18 @@ def seed_national_rail_schedules(cur):
         
         schedules.append((
             sch_id, line_id, item.get("service_type"), item.get("direction"),
+            item.get("first_train_time"), item.get("last_train_time"),
             item.get("frequency_min"), item.get("operates_on", [])
         ))
 
-        for f_class, f_data in item.get("fares", {}).items():
-            fares.append((sch_id, f_class, f_data.get("base"), f_data.get("per_stop")))
+        fare_data = item.get("fares") or item.get("fare_classes") or {}
+        for f_class, f_data in fare_data.items():
+            fares.append((
+                sch_id,
+                f_class,
+                f_data.get("base") or f_data.get("base_fare_usd"),
+                f_data.get("per_stop") or f_data.get("per_stop_rate_usd")
+            ))
 
         for i, st_id in enumerate(item.get("stops_in_order", [])):
             st_lines.add((st_id, line_id))
@@ -214,9 +224,14 @@ def seed_national_rail_schedules(cur):
     execute_values(cur, "INSERT INTO national_rail_lines (line_code) VALUES %s ON CONFLICT DO NOTHING", list(lines))
     
     execute_values(cur, """
-        INSERT INTO national_rail_schedules (schedule_code, line_id, service_type, direction, frequency_min, operates_on) 
-        SELECT data.sch_code, nl.id, data.srv::service_type_enum, data.dir::direction_enum, data.freq::int, data.ops::text[]
-        FROM (VALUES %s) AS data(sch_code, ln_code, srv, dir, freq, ops)
+        INSERT INTO national_rail_schedules (
+            schedule_code, line_id, service_type, direction,
+            first_train_time, last_train_time, frequency_min, operates_on
+        ) 
+        SELECT
+            data.sch_code, nl.id, data.srv::service_type_enum, data.dir::direction_enum,
+            data.first_time::time, data.last_time::time, data.freq::int, data.ops::text[]
+        FROM (VALUES %s) AS data(sch_code, ln_code, srv, dir, first_time, last_time, freq, ops)
         JOIN national_rail_lines nl ON nl.line_code = data.ln_code
         ON CONFLICT (schedule_code) DO NOTHING
     """, schedules)

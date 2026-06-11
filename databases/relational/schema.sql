@@ -153,6 +153,7 @@ CREATE TABLE national_rail_station_lines (
 -- 4. Schedules, stops, fares, and seats
 -- ----------------------------------------------------------------------------
 CREATE TABLE metro_schedules (
+    -- PK Justification: Chosen SERIAL for internal schedule rows; schedule_code is kept as the external business key for stable references.
     id                SERIAL PRIMARY KEY,
     schedule_code     VARCHAR(50) UNIQUE NOT NULL,
     -- FK Cascade Strategy: RESTRICT prevents accidental deletion of an active metro line 
@@ -167,16 +168,23 @@ CREATE TABLE metro_schedules (
 );
 
 CREATE TABLE national_rail_schedules (
+    -- PK Justification: Chosen SERIAL for internal schedule rows; schedule_code is kept as the external business key for stable references.
     id            SERIAL PRIMARY KEY,
     schedule_code VARCHAR(50) UNIQUE NOT NULL,
     line_id       INTEGER NOT NULL REFERENCES national_rail_lines(id) ON DELETE RESTRICT,
     service_type  service_type_enum NOT NULL,
     direction     direction_enum NOT NULL,
+
+    -- TASK 6 EXTENSION: store frequency-based service window from mock data
+    first_train_time TIME,
+    last_train_time  TIME,
+
     frequency_min INTEGER,
     operates_on   TEXT[] NOT NULL
 );
 
 CREATE TABLE national_rail_fares (
+    -- PK Justification: Composite Key used because the natural identity of a record requires both the parent schedule and the specific element.
     schedule_id       INTEGER NOT NULL,
     fare_class        fare_class_enum NOT NULL,
     base_fare_usd     NUMERIC(10,2) NOT NULL,
@@ -187,6 +195,7 @@ CREATE TABLE national_rail_fares (
 );
 
 CREATE TABLE metro_schedule_stops (
+    -- PK Justification: Composite Key used because the natural identity of a record requires both the parent schedule and the specific element.
     schedule_id                 INTEGER NOT NULL,
     station_id                  INTEGER NOT NULL,
     stop_order                  INTEGER NOT NULL,
@@ -200,6 +209,7 @@ CREATE TABLE metro_schedule_stops (
 );
 
 CREATE TABLE national_rail_schedule_stops (
+    -- PK Justification: Composite Key used because the natural identity of a record requires both the parent schedule and the specific element.
     schedule_id                 INTEGER NOT NULL,
     station_id                  INTEGER NOT NULL,
     stop_order                  INTEGER NOT NULL,
@@ -293,6 +303,7 @@ CREATE TABLE metro_trips (
 -- 6. Payments and feedback
 -- ----------------------------------------------------------------------------
 CREATE TABLE payments (
+    -- PK Justification: UUID for transactional integrity. Delete Strategy: Payments reference bookings via ON DELETE RESTRICT to ensure historical financial records are never orphaned.
     id              UUID PRIMARY KEY DEFAULT generate_uuid_v7(),
     payment_ref     VARCHAR(50) UNIQUE NOT NULL,
     rail_booking_id UUID REFERENCES national_rail_bookings(id) ON DELETE RESTRICT,

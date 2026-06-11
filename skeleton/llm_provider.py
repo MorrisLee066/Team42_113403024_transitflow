@@ -13,6 +13,7 @@ Students: You do NOT need to change this file.
 """
 
 from __future__ import annotations
+import json
 import requests
 from typing import List
 from google import genai
@@ -250,14 +251,21 @@ class LLMProvider:
         r.raise_for_status()
 
         raw_calls = r.json().get("message", {}).get("tool_calls", [])
-        return [
-            {
-                "name":   tc["function"]["name"],
-                "params": tc["function"].get("arguments", {}),
-            }
-            for tc in raw_calls
-            if "function" in tc
-        ]
+        calls = []
+        for tc in raw_calls:
+            if "function" not in tc:
+                continue
+            args = tc["function"].get("arguments", {})
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args)
+                except Exception:
+                    args = {}
+            calls.append({
+                "name": tc["function"]["name"],
+                "params": args if isinstance(args, dict) else {},
+            })
+        return calls
 
     def _check_ollama(self):
         try:

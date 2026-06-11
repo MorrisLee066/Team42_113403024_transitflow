@@ -27,7 +27,7 @@ import random
 import string
 import uuid
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta, time
 from typing import Optional
 
 import psycopg2
@@ -39,6 +39,57 @@ from skeleton.config import PG_DSN, VECTOR_TOP_K, VECTOR_SIMILARITY_THRESHOLD
 
 # 全域 Argon2 實例
 ph = PasswordHasher()
+
+
+def _money(value) -> float:
+    """Convert PostgreSQL NUMERIC values into JSON-friendly floats."""
+    return float(value or 0)
+
+
+# TASK 6 EXTENSION:
+# National rail schedules are frequency-based. The schema stores
+# first_train_time / last_train_time; the fallback service window is defensive
+# behavior for missing legacy data.
+def _generate_departure_times(
+    first_train_time,
+    last_train_time,
+    frequency_min: int,
+    origin_offset_min: int = 0,
+) -> list[str]:
+    """
+    Infer origin-station departure times from a frequency-based service pattern.
+
+    Args:
+        first_train_time: First train time from the schedule, or None for fallback.
+        last_train_time: Last train time from the schedule, or None for fallback.
+        frequency_min: Minutes between services.
+        origin_offset_min: Travel-time offset from the schedule origin to this origin.
+
+    Returns:
+        List of HH:MM departure strings at the requested origin station.
+    """
+    if not frequency_min or frequency_min <= 0:
+        return []
+
+    # Keep a documented fallback so legacy or partially seeded data still fails
+    # gracefully instead of breaking availability and booking validation.
+    first_train_time = first_train_time or time(6, 0)
+    last_train_time = last_train_time or time(23, 0)
+
+    if isinstance(first_train_time, str):
+        first_train_time = datetime.strptime(first_train_time, "%H:%M").time()
+    if isinstance(last_train_time, str):
+        last_train_time = datetime.strptime(last_train_time, "%H:%M").time()
+
+    current = datetime.combine(datetime.today(), first_train_time) + timedelta(minutes=origin_offset_min or 0)
+    end = datetime.combine(datetime.today(), last_train_time) + timedelta(minutes=origin_offset_min or 0)
+    departure_times = []
+
+    while current <= end:
+        departure_times.append(current.strftime("%H:%M"))
+        current += timedelta(minutes=frequency_min)
+
+    return departure_times
 
 
 def _connect():
@@ -90,7 +141,144 @@ def query_national_rail_availability(
         destination_id:  e.g. "NR05"
         travel_date:     e.g. "2025-06-01" — used to count bookings; omit for general info
     """
-    raise NotImplementedError("TODO: implement after designing your schema")
+    try:
+        effective_travel_date = travel_date or datetime.now().date().isoformat()
+
+        with _connect() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT EXISTS (
+                        SELECT 1
+                        FROM information_schema.columns
+                        WHERE table_name = 'national_rail_schedules'
+                          AND column_name = 'first_train_time'
+                    ) AS has_first_train_time,
+                    EXISTS (
+                        SELECT 1
+                        FROM information_schema.columns
+                        WHERE table_name = 'national_rail_schedules'
+                          AND column_name = 'last_train_time'
+                    ) AS has_last_train_time
+                """)
+                cols = cur.fetchone() or {}
+                has_time_window = cols.get("has_first_train_time") and cols.get("has_last_train_time")
+
+                if has_time_window:
+                    availability_sql = """
+                        SELECT
+                            s.schedule_code AS schedule_id,
+                            l.line_code AS line,
+                            s.service_type,
+                            s.direction,
+                            s.first_train_time,
+                            s.last_train_time,
+                            s.frequency_min,
+                            s.operates_on,
+                            o.station_code AS origin_id,
+                            o.name AS origin_name,
+                            d.station_code AS destination_id,
+                            d.name AS destination_name,
+                            os.stop_order AS origin_stop_order,
+                            ds.stop_order AS destination_stop_order,
+                            ds.stop_order - os.stop_order AS stops_travelled,
+                            os.travel_time_from_origin_min AS origin_time_from_schedule_origin_min,
+                            ds.travel_time_from_origin_min - os.travel_time_from_origin_min AS travel_time_min,
+                            COUNT(DISTINCT seats.seat_code) AS total_seats,
+                            COUNT(DISTINCT b.seat_code) AS booked_seats
+                        FROM national_rail_schedules s
+                        JOIN national_rail_lines l ON l.id = s.line_id
+                        JOIN national_rail_schedule_stops os ON os.schedule_id = s.id
+                        JOIN national_rail_schedule_stops ds ON ds.schedule_id = s.id
+                        JOIN national_rail_stations o ON o.id = os.station_id
+                        JOIN national_rail_stations d ON d.id = ds.station_id
+                        LEFT JOIN national_rail_seats seats ON seats.schedule_id = s.id
+                        LEFT JOIN national_rail_bookings b
+                            ON b.schedule_id = s.id
+                           AND b.seat_code = seats.seat_code
+                           AND b.status IN ('confirmed', 'in_transit')
+                           AND b.travel_date = %s::date
+                           AND b.origin_stop_order < ds.stop_order
+                           AND b.destination_stop_order > os.stop_order
+                        WHERE o.station_code = %s
+                          AND d.station_code = %s
+                          AND os.stop_order < ds.stop_order
+                        GROUP BY
+                            s.id, s.schedule_code, l.line_code, s.service_type, s.direction,
+                            s.first_train_time, s.last_train_time,
+                            s.frequency_min, s.operates_on,
+                            o.station_code, o.name, d.station_code, d.name,
+                            os.stop_order, ds.stop_order,
+                            os.travel_time_from_origin_min, ds.travel_time_from_origin_min
+                        ORDER BY s.schedule_code
+                    """
+                else:
+                    availability_sql = """
+                        SELECT
+                            s.schedule_code AS schedule_id,
+                            l.line_code AS line,
+                            s.service_type,
+                            s.direction,
+                            NULL::time AS first_train_time,
+                            NULL::time AS last_train_time,
+                            s.frequency_min,
+                            s.operates_on,
+                            o.station_code AS origin_id,
+                            o.name AS origin_name,
+                            d.station_code AS destination_id,
+                            d.name AS destination_name,
+                            os.stop_order AS origin_stop_order,
+                            ds.stop_order AS destination_stop_order,
+                            ds.stop_order - os.stop_order AS stops_travelled,
+                            os.travel_time_from_origin_min AS origin_time_from_schedule_origin_min,
+                            ds.travel_time_from_origin_min - os.travel_time_from_origin_min AS travel_time_min,
+                            COUNT(DISTINCT seats.seat_code) AS total_seats,
+                            COUNT(DISTINCT b.seat_code) AS booked_seats
+                        FROM national_rail_schedules s
+                        JOIN national_rail_lines l ON l.id = s.line_id
+                        JOIN national_rail_schedule_stops os ON os.schedule_id = s.id
+                        JOIN national_rail_schedule_stops ds ON ds.schedule_id = s.id
+                        JOIN national_rail_stations o ON o.id = os.station_id
+                        JOIN national_rail_stations d ON d.id = ds.station_id
+                        LEFT JOIN national_rail_seats seats ON seats.schedule_id = s.id
+                        LEFT JOIN national_rail_bookings b
+                            ON b.schedule_id = s.id
+                           AND b.seat_code = seats.seat_code
+                           AND b.status IN ('confirmed', 'in_transit')
+                           AND b.travel_date = %s::date
+                           AND b.origin_stop_order < ds.stop_order
+                           AND b.destination_stop_order > os.stop_order
+                        WHERE o.station_code = %s
+                          AND d.station_code = %s
+                          AND os.stop_order < ds.stop_order
+                        GROUP BY
+                            s.id, s.schedule_code, l.line_code, s.service_type, s.direction,
+                            s.frequency_min, s.operates_on,
+                            o.station_code, o.name, d.station_code, d.name,
+                            os.stop_order, ds.stop_order,
+                            os.travel_time_from_origin_min, ds.travel_time_from_origin_min
+                        ORDER BY s.schedule_code
+                    """
+
+                cur.execute(availability_sql, (effective_travel_date, origin_id, destination_id))
+                rows = [dict(row) for row in cur.fetchall()]
+
+        for row in rows:
+            total_seats = int(row.get("total_seats") or 0)
+            booked_seats = int(row.get("booked_seats") or 0)
+            row["available_seats"] = max(0, total_seats - booked_seats)
+            # Departure times are generated in Python because this schema stores
+            # frequency-based service patterns, not a materialized timetable.
+            row["departure_times"] = _generate_departure_times(
+                row.get("first_train_time"),
+                row.get("last_train_time"),
+                row.get("frequency_min"),
+                row.get("origin_time_from_schedule_origin_min") or 0,
+            )
+
+        return rows
+    except Exception:
+        logging.exception("Database error in query_national_rail_availability")
+        return []
 
 
 def query_national_rail_fare(
@@ -109,7 +297,42 @@ def query_national_rail_fare(
     Returns:
         dict with fare_class, base_fare_usd, per_stop_rate_usd, total_fare_usd
     """
-    raise NotImplementedError("TODO: implement after designing your schema")
+    try:
+        try:
+            stops = int(stops_travelled)
+        except (TypeError, ValueError):
+            return None
+
+        if stops <= 0:
+            return None
+
+        with _connect() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT f.fare_class, f.base_fare_usd, f.per_stop_rate_usd
+                    FROM national_rail_fares f
+                    JOIN national_rail_schedules s ON s.id = f.schedule_id
+                    WHERE s.schedule_code = %s
+                      AND f.fare_class = %s::fare_class_enum
+                """, (schedule_id, fare_class))
+                row = cur.fetchone()
+
+        if not row:
+            return None
+
+        base_fare = _money(row["base_fare_usd"])
+        per_stop_rate = _money(row["per_stop_rate_usd"])
+        total_fare = base_fare + (per_stop_rate * stops)
+
+        return {
+            "fare_class": row["fare_class"],
+            "base_fare_usd": base_fare,
+            "per_stop_rate_usd": per_stop_rate,
+            "total_fare_usd": round(total_fare, 2),
+        }
+    except Exception:
+        logging.exception("Database error in query_national_rail_fare")
+        return None
 
 
 # ── METRO SCHEDULES & FARE ────────────────────────────────────────────────────
@@ -122,7 +345,51 @@ def query_metro_schedules(origin_id: str, destination_id: str) -> list[dict]:
         origin_id:       e.g. "MS01"
         destination_id:  e.g. "MS09"
     """
-    raise NotImplementedError("TODO: implement after designing your schema")
+    try:
+        with _connect() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT
+                        s.schedule_code AS schedule_id,
+                        l.line_code AS line,
+                        s.direction,
+                        s.frequency_min,
+                        s.operates_on,
+                        o.station_code AS origin_id,
+                        o.name AS origin_name,
+                        d.station_code AS destination_id,
+                        d.name AS destination_name,
+                        os.stop_order AS origin_stop_order,
+                        ds.stop_order AS destination_stop_order,
+                        ds.stop_order - os.stop_order AS stops_travelled,
+                        ds.travel_time_from_origin_min - os.travel_time_from_origin_min AS travel_time_min,
+                        s.base_fare_usd,
+                        s.per_stop_rate_usd,
+                        ARRAY_AGG(st.station_code ORDER BY stop.stop_order) AS stops_in_order
+                    FROM metro_schedules s
+                    JOIN metro_lines l ON l.id = s.line_id
+                    JOIN metro_schedule_stops os ON os.schedule_id = s.id
+                    JOIN metro_schedule_stops ds ON ds.schedule_id = s.id
+                    JOIN metro_stations o ON o.id = os.station_id
+                    JOIN metro_stations d ON d.id = ds.station_id
+                    JOIN metro_schedule_stops stop ON stop.schedule_id = s.id
+                    JOIN metro_stations st ON st.id = stop.station_id
+                    WHERE o.station_code = %s
+                      AND d.station_code = %s
+                      AND os.stop_order < ds.stop_order
+                    GROUP BY
+                        s.id, s.schedule_code, l.line_code, s.direction,
+                        s.frequency_min, s.operates_on,
+                        o.station_code, o.name, d.station_code, d.name,
+                        os.stop_order, ds.stop_order,
+                        os.travel_time_from_origin_min, ds.travel_time_from_origin_min,
+                        s.base_fare_usd, s.per_stop_rate_usd
+                    ORDER BY s.schedule_code
+                """, (origin_id, destination_id))
+                return [dict(row) for row in cur.fetchall()]
+    except Exception:
+        logging.exception("Database error in query_metro_schedules")
+        return []
 
 
 def query_metro_fare(schedule_id: str, stops_travelled: int) -> Optional[dict]:
@@ -136,7 +403,34 @@ def query_metro_fare(schedule_id: str, stops_travelled: int) -> Optional[dict]:
     Returns:
         dict with base_fare_usd, per_stop_rate_usd, total_fare_usd
     """
-    raise NotImplementedError("TODO: implement after designing your schema")
+    try:
+        if stops_travelled <= 0:
+            return None
+
+        with _connect() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT base_fare_usd, per_stop_rate_usd
+                    FROM metro_schedules
+                    WHERE schedule_code = %s
+                """, (schedule_id,))
+                row = cur.fetchone()
+
+        if not row:
+            return None
+
+        base_fare = _money(row["base_fare_usd"])
+        per_stop_rate = _money(row["per_stop_rate_usd"])
+        total_fare = base_fare + (per_stop_rate * stops_travelled)
+
+        return {
+            "base_fare_usd": base_fare,
+            "per_stop_rate_usd": per_stop_rate,
+            "total_fare_usd": round(total_fare, 2),
+        }
+    except Exception:
+        logging.exception("Database error in query_metro_fare")
+        return None
 
 
 # ── SEAT SELECTION ────────────────────────────────────────────────────────────
@@ -151,7 +445,11 @@ def query_available_seats(schedule_id: str, travel_date: str, fare_class: str) -
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 # Note: schedule_id passed by Agent is the schedule_code (Business Key, e.g., 'NR1-001')
                 cur.execute("""
-                    SELECT s.seat_code, s.coach, s.seat_row, s.seat_column
+                    SELECT
+                        s.seat_code AS seat_id,
+                        s.coach,
+                        s.seat_row AS row,
+                        s.seat_column AS column
                     FROM national_rail_seats s
                     JOIN national_rail_schedules sch ON s.schedule_id = sch.id
                     WHERE sch.schedule_code = %s AND s.fare_class = %s
@@ -308,8 +606,9 @@ def execute_booking(
     origin_station_id: str,
     destination_station_id: str,
     travel_date: str,
-    fare_class: str,
-    seat_id: str,
+    departure_time: Optional[str] = None,
+    fare_class: Optional[str] = None,
+    seat_id: Optional[str] = None,
     ticket_type: str = "single",
 ) -> tuple[bool, dict | str]:
     """
@@ -329,7 +628,223 @@ def execute_booking(
         (True, booking_dict)   on success
         (False, error_message) on failure
     """
-    raise NotImplementedError("TODO: implement after designing your schema")
+    conn = None
+    try:
+        booking_ref = _gen_booking_id()
+        payment_ref = _gen_payment_id()
+        requested_departure = str(departure_time)[:5] if departure_time else None
+
+        conn = _connect()
+        conn.autocommit = False
+
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("""
+                SELECT
+                    u.id AS user_uuid,
+                    s.id AS schedule_pk,
+                    s.schedule_code,
+                    s.first_train_time,
+                    s.last_train_time,
+                    s.frequency_min,
+                    o.id AS origin_pk,
+                    d.id AS destination_pk,
+                    os.stop_order AS origin_stop_order,
+                    d_stop.stop_order AS destination_stop_order,
+                    os.travel_time_from_origin_min AS origin_time_from_schedule_origin_min
+                FROM users u
+                JOIN national_rail_schedules s ON s.schedule_code = %s
+                JOIN national_rail_stations o ON o.station_code = %s
+                JOIN national_rail_stations d ON d.station_code = %s
+                JOIN national_rail_schedule_stops os
+                    ON os.schedule_id = s.id AND os.station_id = o.id
+                JOIN national_rail_schedule_stops d_stop
+                    ON d_stop.schedule_id = s.id AND d_stop.station_id = d.id
+                WHERE u.user_code = %s
+                  AND u.is_active = TRUE
+                LIMIT 1
+            """, (schedule_id, origin_station_id, destination_station_id, user_id))
+            journey = cur.fetchone()
+
+            if not journey:
+                conn.rollback()
+                return False, "Origin or destination is not served by this schedule."
+
+            if journey["destination_stop_order"] <= journey["origin_stop_order"]:
+                conn.rollback()
+                return False, "Destination must be after origin for this schedule."
+
+            # TASK 6 EXTENSION:
+            # Validate requested departure_time against the frequency-derived service times for this origin station before creating any booking/payment rows.
+            valid_departure_times = _generate_departure_times(
+                journey.get("first_train_time"),
+                journey.get("last_train_time"),
+                journey.get("frequency_min"),
+                journey.get("origin_time_from_schedule_origin_min") or 0,
+            )
+
+            if not requested_departure:
+                conn.rollback()
+                return False, {
+                    "success": False,
+                    "error": "Missing departure_time",
+                    "message": "A departure time is required for frequency-based booking.",
+                }
+
+            valid_hhmm = [str(t)[:5] for t in valid_departure_times]
+            if requested_departure not in valid_hhmm:
+                conn.rollback()
+                return False, {
+                    "success": False,
+                    "error": "Invalid departure_time",
+                    "message": f"The requested departure time {departure_time} is not available for schedule {schedule_id} on {travel_date}.",
+                    "available_departure_times": valid_departure_times,
+                }
+
+            stops = journey["destination_stop_order"] - journey["origin_stop_order"]
+            cur.execute("""
+                SELECT
+                    f.base_fare_usd,
+                    f.per_stop_rate_usd
+                FROM national_rail_fares f
+                JOIN national_rail_schedules s ON s.id = f.schedule_id
+                WHERE s.schedule_code = %s
+                  AND f.fare_class = %s::fare_class_enum
+            """, (schedule_id, fare_class))
+            fare = cur.fetchone()
+
+            if not fare:
+                conn.rollback()
+                return False, "Fare not found for this schedule and fare class."
+
+            amount_usd = round(_money(fare["base_fare_usd"]) + (_money(fare["per_stop_rate_usd"]) * stops), 2)
+
+            if seat_id == "any":
+                cur.execute("""
+                    SELECT seat.seat_code, seat.coach
+                    FROM national_rail_seats seat
+                    JOIN national_rail_schedules s ON s.id = seat.schedule_id
+                    WHERE s.schedule_code = %s
+                      AND seat.fare_class = %s::fare_class_enum
+                    ORDER BY seat.coach, seat.seat_row, seat.seat_column
+                """, (schedule_id, fare_class))
+            else:
+                cur.execute("""
+                    SELECT seat.seat_code, seat.coach
+                    FROM national_rail_seats seat
+                    JOIN national_rail_schedules s ON s.id = seat.schedule_id
+                    WHERE s.schedule_code = %s
+                      AND seat.seat_code = %s
+                      AND seat.fare_class = %s::fare_class_enum
+                """, (schedule_id, seat_id, fare_class))
+            candidate_seats = [dict(row) for row in cur.fetchall()]
+
+            if not candidate_seats:
+                conn.rollback()
+                return False, "No seat found for this schedule and fare class."
+
+            selected_seat = None
+            for seat in candidate_seats:
+                # Concurrency note: lock only the schedule/date/seat key, not the static seat table.
+                # This prevents two overlapping bookings from choosing the same seat concurrently, satisfying the deadlock-free concurrency requirement while allowing optimal performance.
+                cur.execute("""
+                    SELECT pg_advisory_xact_lock(hashtext(%s::text || '|' || %s::text || '|' || %s::text))
+                """, (schedule_id, travel_date, seat["seat_code"]))
+                cur.execute("""
+                    SELECT 1
+                    FROM national_rail_bookings b
+                    WHERE b.travel_date = %s::date
+                      AND b.departure_time = %s::time
+                      AND b.schedule_id = %s
+                      AND b.seat_code = %s
+                      AND b.origin_stop_order < %s
+                      AND b.destination_stop_order > %s
+                      AND b.status <> 'cancelled'
+                    FOR UPDATE OF b
+                """, (
+                    travel_date,
+                    requested_departure,
+                    journey["schedule_pk"],
+                    seat["seat_code"],
+                    journey["destination_stop_order"],
+                    journey["origin_stop_order"],
+                ))
+                if not cur.fetchone():
+                    selected_seat = seat
+                    break
+
+            if not selected_seat:
+                conn.rollback()
+                return False, "Seat already booked for this route."
+
+            cur.execute("""
+                INSERT INTO national_rail_bookings (
+                    booking_ref, user_id, schedule_id, origin_station_id, destination_station_id,
+                    seat_code, travel_date, departure_time, ticket_type, fare_class, coach,
+                    stops_travelled, origin_stop_order, destination_stop_order, amount_usd, status
+                )
+                VALUES (
+                    %s, %s, %s, %s, %s,
+                    %s, %s::date, %s::time, %s::ticket_type_enum, %s::fare_class_enum, %s,
+                    %s, %s, %s, %s, 'confirmed'::booking_status_enum
+                )
+                RETURNING id
+            """, (
+                booking_ref,
+                journey["user_uuid"],
+                journey["schedule_pk"],
+                journey["origin_pk"],
+                journey["destination_pk"],
+                selected_seat["seat_code"],
+                travel_date,
+                requested_departure,
+                ticket_type,
+                fare_class,
+                selected_seat["coach"],
+                stops,
+                journey["origin_stop_order"],
+                journey["destination_stop_order"],
+                amount_usd,
+            ))
+            booking = cur.fetchone()
+
+            cur.execute("""
+                INSERT INTO payments (
+                    payment_ref, rail_booking_id, amount_usd, method, status
+                )
+                VALUES (
+                    %s, %s, %s, 'credit_card'::payment_method_enum, 'paid'::payment_status_enum
+                )
+                RETURNING payment_ref
+            """, (payment_ref, booking["id"], amount_usd))
+            payment = cur.fetchone()
+
+        conn.commit()
+        return True, {
+            "booking_id": booking_ref,
+            "booking_ref": booking_ref,
+            "payment_ref": payment["payment_ref"],
+            "user_id": user_id,
+            "schedule_id": schedule_id,
+            "origin_station_id": origin_station_id,
+            "destination_station_id": destination_station_id,
+            "travel_date": travel_date,
+            "departure_time": requested_departure,
+            "ticket_type": ticket_type,
+            "fare_class": fare_class,
+            "seat_id": selected_seat["seat_code"],
+            "seat_code": selected_seat["seat_code"],
+            "coach": selected_seat["coach"],
+            "amount_usd": float(amount_usd),
+            "status": "confirmed",
+        }
+    except Exception as exc:
+        if conn:
+            conn.rollback()
+        logging.exception("Database error in execute_booking")
+        return False, str(exc)
+    finally:
+        if conn:
+            conn.close()
 
 
 def execute_cancellation(booking_id: str, user_id: str) -> tuple[bool, dict | str]:
@@ -348,7 +863,95 @@ def execute_cancellation(booking_id: str, user_id: str) -> tuple[bool, dict | st
         (True, result_dict)  with refund_amount_usd and policy note
         (False, error_msg)
     """
-    raise NotImplementedError("TODO: implement after designing your schema")
+    conn = None
+    try:
+        conn = _connect()
+        conn.autocommit = False
+
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("""
+                SELECT
+                    b.id,
+                    b.booking_ref,
+                    b.amount_usd,
+                    b.travel_date,
+                    b.departure_time,
+                    b.status,
+                    s.service_type
+                FROM national_rail_bookings b
+                JOIN users u ON u.id = b.user_id
+                JOIN national_rail_schedules s ON s.id = b.schedule_id
+                WHERE b.booking_ref = %s
+                  AND u.user_code = %s
+                FOR UPDATE
+            """, (booking_id, user_id))
+            booking = cur.fetchone()
+
+            if not booking:
+                conn.rollback()
+                return False, "Booking not found for this user."
+
+            if booking["status"] != "confirmed":
+                conn.rollback()
+                return False, "Only confirmed bookings can be cancelled."
+
+            departure_datetime = datetime.combine(
+                booking["travel_date"],
+                booking["departure_time"],
+            )
+            hours_before = (departure_datetime - datetime.now()).total_seconds() / 3600
+            amount_usd = _money(booking["amount_usd"])
+
+            if booking["service_type"] == "express":
+                policy_applied = "RF002 Express"
+                if hours_before >= 48:
+                    percent, fee = 100, 1.00
+                elif hours_before >= 24:
+                    percent, fee = 50, 1.00
+                else:
+                    percent, fee = 0, 0.00
+            else:
+                policy_applied = "RF001 Normal"
+                if hours_before >= 48:
+                    percent, fee = 100, 0.00
+                elif hours_before >= 24:
+                    percent, fee = 75, 0.50
+                elif hours_before >= 2:
+                    percent, fee = 50, 0.50
+                else:
+                    percent, fee = 0, 0.00
+
+            refund_amount = round(max(0, amount_usd * (percent / 100) - fee), 2)
+
+            cur.execute("""
+                UPDATE national_rail_bookings
+                SET status = 'cancelled'::booking_status_enum,
+                    refund_amount_usd = %s,
+                    cancelled_at = NOW()
+                WHERE id = %s
+                RETURNING booking_ref
+            """, (refund_amount, booking["id"]))
+            updated = cur.fetchone()
+
+            if not updated:
+                conn.rollback()
+                return False, "Cancellation failed."
+
+        conn.commit()
+        return True, {
+            "booking_ref": booking_id,
+            "refund_amount_usd": refund_amount,
+            "policy_applied": policy_applied,
+            "message": "Booking cancelled successfully.",
+        }
+    except Exception:
+        if conn:
+            conn.rollback()
+        logging.exception("Database error in execute_cancellation")
+        return False, "An internal error occurred while cancelling the booking."
+    finally:
+        if conn:
+            conn.close()
 
 
 # ── AUTHENTICATION QUERIES ────────────────────────────────────────────────────
@@ -437,7 +1040,8 @@ def login_user(email: str, password: str) -> Optional[dict]:
         with _connect() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 cur.execute("""
-                    SELECT u.id, u.user_code, u.full_name, u.email, u.is_active, c.password_hash
+                    SELECT u.id, u.user_code, u.full_name, u.first_name, u.surname,
+                           u.email, u.is_active, c.password_hash
                     FROM users u
                     JOIN user_credentials c ON u.id = c.user_id
                     WHERE u.email = %s

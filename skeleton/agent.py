@@ -196,21 +196,28 @@ TOOLS = [
     },
     {
         "name": "make_booking",
+        # TASK 6 EXTENSION:
+        # National rail schedules are frequency-based rather than fully materialized timetables.
+        # The agent must obtain valid departure_times from query_national_rail_availability
+        # before calling execute_booking, so bookings are tied to real inferred services.
         "description": (
-            "Create a national rail booking for the logged-in user. "
-            "REQUIRES LOGIN. Only call after the user has explicitly confirmed all booking details. "
-            "Do NOT call this speculatively."
+            "Book a national rail ticket only after the user has selected a valid schedule, "
+            "travel date, departure time, fare class, and seat. If the user has not provided "
+            "a departure time, first call check_national_rail_availability to obtain valid "
+            "departure_times. The departure_time passed to make_booking must be one of the "
+            "returned departure_times. Do not invent or assume a departure time."
         ),
         "parameters": {
             "schedule_id":            {"type": "string", "description": "e.g. NR_SCH01"},
             "origin_station_id":      {"type": "string", "description": "e.g. NR01"},
             "destination_station_id": {"type": "string", "description": "e.g. NR05"},
             "travel_date":            {"type": "string", "description": "YYYY-MM-DD"},
+            "departure_time":         {"type": "string", "description": "HH:MM from returned departure_times"},
             "fare_class":             {"type": "string", "description": "standard or first"},
             "seat_id":                {"type": "string", "description": "Specific seat ID (e.g. B05) or 'any' for auto-assign"},
             "ticket_type":            {"type": "string", "description": "single or return (default single)"},
         },
-        "required": ["schedule_id", "origin_station_id", "destination_station_id", "travel_date", "fare_class", "seat_id"],
+        "required": ["schedule_id", "origin_station_id", "destination_station_id", "travel_date", "departure_time", "fare_class", "seat_id"],
     },
     {
         "name": "cancel_booking",
@@ -281,7 +288,7 @@ get_national_rail_fare(schedule_id, fare_class, stops_travelled)
 check_metro_availability(origin_id, destination_id)
 calculate_metro_fare(schedule_id, stops_travelled)
 get_available_seats(schedule_id, travel_date, fare_class)
-make_booking(schedule_id, origin_station_id, destination_station_id, travel_date, fare_class, seat_id, ticket_type?)
+make_booking(schedule_id, origin_station_id, destination_station_id, travel_date, departure_time, fare_class, seat_id, ticket_type?)
 cancel_booking(booking_id)
 get_user_bookings()
 search_policy(query)
@@ -357,12 +364,32 @@ def _execute_tool(
             profile = query_user_profile(current_user_email)
             if not profile:
                 return json.dumps({"error": "User profile not found."})
+            user_code = profile.get("user_code") or profile.get("user_id")
+            required = [
+                "schedule_id",
+                "origin_station_id",
+                "destination_station_id",
+                "travel_date",
+                "departure_time",
+                "fare_class",
+                "seat_id",
+            ]
+            missing = [key for key in required if not params.get(key)]
+            if missing:
+                return json.dumps({
+                    "error": (
+                        "Missing required booking parameters: "
+                        + ", ".join(missing)
+                        + ". Please specify fare_class (standard/first), departure_time, and seat_id (e.g. 'B05' or 'any')."
+                    )
+                })
             ok, data = execute_booking(
-                user_id=profile["user_id"],
+                user_id=user_code,
                 schedule_id=params["schedule_id"],
                 origin_station_id=params["origin_station_id"],
                 destination_station_id=params["destination_station_id"],
                 travel_date=params["travel_date"],
+                departure_time=params.get("departure_time"),
                 fare_class=params["fare_class"],
                 seat_id=params["seat_id"],
                 ticket_type=params.get("ticket_type", "single"),
@@ -375,9 +402,10 @@ def _execute_tool(
             profile = query_user_profile(current_user_email)
             if not profile:
                 return json.dumps({"error": "User profile not found."})
+            user_code = profile.get("user_code") or profile.get("user_id")
             ok, data = execute_cancellation(
                 booking_id=params["booking_id"],
-                user_id=profile["user_id"],
+                user_id=user_code,
             )
             result = data if ok else {"error": data}
 
@@ -549,7 +577,10 @@ def run_agent(
     if current_user_email:
         profile = query_user_profile(current_user_email)
         if profile:
-            user_display = f"{profile['full_name']} (email: {current_user_email}, user_id: {profile['user_id']})"
+            user_display = (
+                f"{profile['full_name']} "
+                f"(email: {current_user_email}, user_code: {profile.get('user_code')})"
+            )
         else:
             user_display = current_user_email
         contextual_prompt = SYSTEM_PROMPT + (
@@ -580,6 +611,11 @@ Or if no tool needed: {{"tool_calls": []}}
 STATIONS: Metro=MS01-MS20, Rail=NR01-NR10
 USER: {current_user_email or "not logged in"}
 get_user_bookings: call (no params) when logged-in user asks about their bookings, tickets, or travel history.
+book / reserve / buy ticket / make a booking: use make_booking when all booking details are present.
+view / list / check my bookings: use get_user_bookings.
+seat availability only: use get_available_seats.
+fare only: use get_national_rail_fare.
+availability only: use check_national_rail_availability.
 make_booking/cancel_booking: only if user is logged in.
 Route/path/journey questions: use find_route. Policy questions: use search_policy.
 Never use "" as a param value. Omit optional params if unknown.
@@ -599,7 +635,7 @@ Examples:
 "refund policy" -> {{"tool_calls": [{{"name": "search_policy", "params": {{"query": "refund policy"}}}}]}}
 "hello" -> {{"tool_calls": []}}
 "show my bookings" -> {{"tool_calls": [{{"name": "get_user_bookings", "params": {{}}}}]}}
-"book me a seat NR01 to NR05 on 2025-06-01" -> {{"tool_calls": [{{"name": "check_national_rail_availability", "params": {{"origin_id": "NR01", "destination_id": "NR05", "travel_date": "2025-06-01"}}}}]}}
+"booking intent with schedule, stations, date, departure time, fare class, and seat" -> make_booking
 
 JSON:"""
 
@@ -612,7 +648,8 @@ JSON:"""
                 "You are a tool router. Call the right tool based on the user message. "
                 f"Logged-in user: {current_user_email or 'none'}. "
                 "My bookings/tickets/travel history → get_user_bookings (no params). "
-                "Book a ticket / make a booking → check_national_rail_availability first, then make_booking. "
+                "Book/reserve/buy ticket/make a booking → make_booking when all required booking details are present. "
+                "Do not use get_user_bookings or get_available_seats to create bookings. "
                 "Cancel a booking → cancel_booking. "
                 "Policy/rules/conduct/compensation/luggage/bicycle questions → search_policy. "
                 "Route/directions/fastest/quickest/how-to-get/path questions → find_route ONLY (never get_metro_fare). "
@@ -669,8 +706,30 @@ JSON:"""
                   {"origin_id": _station_ids[0].upper(), "destination_id": _station_ids[1].upper(), "optimise_by": _opt},
                   "route query")
 
-    # 2. Availability / trains / schedules between two stations
-    elif not tool_calls and _two_stations:
+    # 2. Booking intent must create a booking, not just show availability.
+    # TASK 6 EXTENSION:
+    # Booking intent must route to make_booking so departure_time validation happens inside execute_booking instead of stopping at availability/seat helper tools.
+    if _two_stations:
+        _booking_triggers = {"book", "booking", "reserve", "reservation", "buy ticket", "make a booking"}
+        if any(kw in _lower for kw in _booking_triggers):
+            _schedule_match = re.search(r'\bNR_SCH\d+\b', _augmented_message, re.IGNORECASE)
+            _travel_date_match = re.search(r'\b\d{4}-\d{2}-\d{2}\b', _augmented_message)
+            _departure_time_match = re.search(r'\b\d{1,2}:\d{2}\b', _augmented_message)
+            _fare_class_match = re.search(r'\b(standard|first)\b', _lower)
+            _seat_match = re.search(r'\b(any|[A-Z]\d{2})\b', _augmented_message, re.IGNORECASE)
+            if all([_schedule_match, _travel_date_match, _departure_time_match, _fare_class_match, _seat_match]):
+                _fallback("make_booking", {
+                    "schedule_id": _schedule_match.group(0).upper(),
+                    "origin_station_id": _station_ids[0].upper(),
+                    "destination_station_id": _station_ids[1].upper(),
+                    "travel_date": _travel_date_match.group(0),
+                    "departure_time": _departure_time_match.group(0),
+                    "fare_class": _fare_class_match.group(1),
+                    "seat_id": _seat_match.group(1).lower() if _seat_match.group(1).lower() == "any" else _seat_match.group(1).upper(),
+                }, "booking query override")
+
+    # 3. Availability / trains / schedules between two stations
+    if not tool_calls and _two_stations:
         _avail_triggers = {"train", "trains", "service", "services", "run from", "runs from",
                            "schedule", "timetable", "available", "availability"}
         if any(kw in _lower for kw in _avail_triggers):
@@ -683,6 +742,12 @@ JSON:"""
                 _params["travel_date"] = _travel_date
             _tool = "check_national_rail_availability" if o.startswith("NR") else "check_metro_availability"
             _fallback(_tool, _params, "availability query")
+
+    if current_user_email:
+        _cancel_triggers = {"cancel", "cancellation", "refund booking"}
+        _booking_ref_match = re.search(r'\bBK-?[A-Z0-9]+\b', _augmented_message, re.IGNORECASE)
+        if any(kw in _lower for kw in _cancel_triggers) and _booking_ref_match:
+            _fallback("cancel_booking", {"booking_id": _booking_ref_match.group(0).upper()}, "cancellation query override")
 
     # 3. Personal booking history — requires login
     if current_user_email and not tool_calls:
@@ -697,6 +762,15 @@ JSON:"""
     for call in tool_calls:
         tool_name = call.get("name", "")
         params    = call.get("params") or call.get("parameters", {})
+
+        if tool_name == "make_booking" and params.get("fare_class") not in {"standard", "first"}:
+            fare_match = re.search(r'\b(standard|first)\b', _lower)
+            if fare_match:
+                params["fare_class"] = fare_match.group(1)
+        if tool_name == "cancel_booking" and not params.get("booking_id"):
+            booking_ref = params.get("booking_ref") or re.search(r'\bBK-?[A-Z0-9]+\b', _augmented_message, re.IGNORECASE)
+            if booking_ref:
+                params["booking_id"] = booking_ref if isinstance(booking_ref, str) else booking_ref.group(0).upper()
 
         # Skip calls with empty string values — LLM failed to extract params
         if any(v == "" for v in params.values()):
