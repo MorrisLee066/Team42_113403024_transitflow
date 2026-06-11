@@ -86,7 +86,7 @@ def query_shortest_route(
                 
                 path = res["path"]
                 stations = [{"station_id": n["station_id"], "name": n["name"]} for n in path.nodes]
-                legs = [{"type": type(r), "time": r.get("travel_time_min", 0)} for r in path.relationships]
+                legs = [{"type": r.type, "time": r.get("travel_time_min", 0)} for r in path.relationships]
                 
                 return {
                     "found": True,
@@ -140,7 +140,7 @@ def query_cheapest_route(
                 
                 path = res["path"]
                 stations = [{"station_id": n["station_id"], "name": n["name"]} for n in path.nodes]
-                legs = [{"type": type(r), "fare": r.get(weight_property, 0)} for r in path.relationships]
+                legs = [{"type": r.type, "fare": r.get(weight_property, 0)} for r in path.relationships]
                 
                 return {
                     "found": True,
@@ -189,7 +189,7 @@ def query_alternative_routes(
                 results = session.run(query, origin_id=origin_id, destination_id=destination_id, avoid_station_id=avoid_station_id, max_routes=max_routes)
                 for record in results:
                     path = record["path"]
-                    legs = [{"from": path.nodes[i]["station_id"], "to": path.nodes[i+1]["station_id"], "type": type(path.relationships[i])} for i in range(len(path.relationships))]
+                    legs = [{"from": path.nodes[i]["station_id"], "to": path.nodes[i+1]["station_id"], "type": path.relationships[i].type} for i in range(len(path.relationships))]
                     routes.append(legs)
         return routes
     except Exception as e:
@@ -225,7 +225,7 @@ def query_interchange_path(origin_id: str, destination_id: str) -> dict:
                     
                 path = res["path"]
                 stations = [{"station_id": n["station_id"], "name": n["name"]} for n in path.nodes]
-                interchange_points = [path.nodes[i]["station_id"] for i, r in enumerate(path.relationships) if type(r) == 'INTERCHANGE_WITH']
+                interchange_points = [path.nodes[i]["station_id"] for i, r in enumerate(path.relationships) if r.type == 'INTERCHANGE_WITH']
                 total_time = sum(r.get("travel_time_min", 0) for r in path.relationships)
                 
                 return {
