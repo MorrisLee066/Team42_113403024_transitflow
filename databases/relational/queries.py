@@ -47,9 +47,8 @@ def _money(value) -> float:
 
 
 # TASK 6 EXTENSION:
-# National rail schedules are frequency-based. The schema stores
-# first_train_time / last_train_time; the fallback service window is defensive
-# behavior for missing legacy data.
+# Generate and validate valid departure times using the stored service window
+# and the selected origin station's travel-time offset.
 def _generate_departure_times(
     first_train_time,
     last_train_time,
@@ -266,8 +265,9 @@ def query_national_rail_availability(
             total_seats = int(row.get("total_seats") or 0)
             booked_seats = int(row.get("booked_seats") or 0)
             row["available_seats"] = max(0, total_seats - booked_seats)
-            # Departure times are generated in Python because this schema stores
-            # frequency-based service patterns, not a materialized timetable.
+            # TASK 6 EXTENSION:
+            # Return valid departure times generated from the stored service window
+            # and the selected origin station's travel-time offset.
             row["departure_times"] = _generate_departure_times(
                 row.get("first_train_time"),
                 row.get("last_train_time"),
@@ -674,7 +674,8 @@ def execute_booking(
                 return False, "Destination must be after origin for this schedule."
 
             # TASK 6 EXTENSION:
-            # Validate requested departure_time against the frequency-derived service times for this origin station before creating any booking/payment rows.
+            # Reject missing or invalid departure_time values before creating
+            # booking or payment rows.
             valid_departure_times = _generate_departure_times(
                 journey.get("first_train_time"),
                 journey.get("last_train_time"),

@@ -11,6 +11,9 @@
 --  RELATIONAL SCHEMA
 -- ============================================================
 
+-- TASK 6 EXTENSION:
+-- Frequency-based national rail departure-time generation and validation.
+
 CREATE EXTENSION IF NOT EXISTS vector;
 -- Ensure UUID generation is available
 CREATE EXTENSION IF NOT EXISTS "pgcrypto"; 

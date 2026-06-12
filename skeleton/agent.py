@@ -27,6 +27,9 @@ Your goal is to make the database queries richer by:
 The agent will automatically use whatever you put in the databases.
 """
 
+# TASK 6 EXTENSION:
+# Frequency-based national rail departure-time generation and validation.
+
 from __future__ import annotations
 
 import json

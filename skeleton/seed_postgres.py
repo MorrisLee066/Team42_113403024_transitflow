@@ -9,6 +9,9 @@ You must first design and create your tables in databases/relational/schema.sql.
 Safe to re-run: implement your inserts with ON CONFLICT DO NOTHING.
 """
 
+# TASK 6 EXTENSION:
+# Frequency-based national rail departure-time generation and validation.
+
 import json
 import os
 import sys
